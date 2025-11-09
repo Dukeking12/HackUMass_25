@@ -28,13 +28,31 @@ MAFilter bpm;
 #define VIBRATOR4 10
 #define VIBRATOR5 11
 
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// ++ NEW - Variables for Time, Alarm, and State Management
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+enum State {SET_CURRENT_HOUR, SET_CURRENT_MINUTE, SET_WAKE_HOUR, SET_WAKE_MINUTE, CALCULATING, RUNNING};
+State currentState = SET_CURRENT_HOUR;
+
+int currentHour = 12, currentMinute = 0;
+int wakeHour = 6, wakeMinute = 30;
+
+unsigned long lastInputTime = 0;
+
+// Alarm specific variables
+bool isVibrating = false;
+bool alarmHasTriggered = false;    // Ensures alarm only happens once per reset
+unsigned long vibrationStartTime = 0;
+unsigned long alarmSetupTime = 0;  // When the user finished setting times
+unsigned long timeToWaitMs = 0;    // Calculated duration to wait
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 static const uint8_t heart_bits[] PROGMEM = { 0x00, 0x00, 0x38, 0x38, 0x7c, 0x7c, 0xfe, 0xfe, 0xfe, 0xff,
                                               0xfe, 0xff, 0xfc, 0x7f, 0xf8, 0x3f, 0xf0, 0x1f, 0xe0, 0x0f,
                                               0xc0, 0x07, 0x80, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
                                               0x00, 0x00
                                             };
 
-//spo2_table is approximated as  -45.060*ratioAverage* ratioAverage + 30.354 *ratioAverage + 94.845 ;
 const uint8_t spo2_table[184] PROGMEM =
 { 95, 95, 95, 96, 96, 96, 97, 97, 97, 97, 97, 98, 98, 98, 98, 98, 99, 99, 99, 99,
   99, 99, 99, 99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
@@ -50,23 +68,20 @@ const uint8_t spo2_table[184] PROGMEM =
 
 
 int getVCC() {
-  //reads internal 1V1 reference against VCC
 #if defined(__AVR_ATmega1284P__)
-  ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);  // For ATmega1284
+  ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
 #else
-  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);  // For ATmega328
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
 #endif
-  delay(2); // Wait for Vref to settle
-  ADCSRA |= _BV(ADSC); // Convert
+  delay(2);
+  ADCSRA |= _BV(ADSC);
   while (bit_is_set(ADCSRA, ADSC));
   uint8_t low = ADCL;
   unsigned int val = (ADCH << 8) | low;
-  //discard previous result
-  ADCSRA |= _BV(ADSC); // Convert
+  ADCSRA |= _BV(ADSC);
   while (bit_is_set(ADCSRA, ADSC));
   low = ADCL;
   val = (ADCH << 8) | low;
-
   return (((long)1024 * 1100) / val) / 100;
 }
 
@@ -81,10 +96,16 @@ void print_digit(int x, int y, long val, char c = ' ', uint8_t field = 3, const 
   } while (ff > 0);
 }
 
+void draw_setup_screen(const char* title, int value) {
+  oled.firstPage();
+  do {
+    oled.drawStr(0, 0, title, 2);
+    char valStr[3];
+    sprintf(valStr, "%02d", value);
+    oled.drawStr(45, 18, valStr, 2);
+  } while (oled.nextPage());
+}
 
-/*
-     Record, scale  and display PPG Wavefoem
-*/
 const uint8_t MAXWAVE = 72;
 
 class Waveform {
@@ -92,15 +113,13 @@ class Waveform {
     Waveform(void) {
       wavep = 0;
     }
-
     void record(int waveval) {
-      waveval = waveval / 8;       // scale to fit in byte
-      waveval += 128;              //shift so entired waveform is +ve
+      waveval = waveval / 8;
+      waveval += 128;
       waveval = waveval < 0 ? 0 : waveval;
       waveform[wavep] = (uint8_t) (waveval > 255) ? 255 : waveval;
       wavep = (wavep + 1) % MAXWAVE;
     }
-
     void scale() {
       uint8_t maxw = 0;
       uint8_t minw = 255;
@@ -108,14 +127,13 @@ class Waveform {
         maxw = waveform[i] > maxw ? waveform[i] : maxw;
         minw = waveform[i] < minw ? waveform[i] : minw;
       }
-      uint8_t scale8 = (maxw - minw) / 4 + 1; //scale * 8 to preserve precision
+      uint8_t scale8 = (maxw - minw) / 4 + 1;
       uint8_t index = wavep;
       for (int i = 0; i < MAXWAVE; i++) {
         disp_wave[i] = 31 - ((uint16_t)(waveform[index] - minw) * 8) / scale8;
         index = (index + 1) % MAXWAVE;
       }
     }
-
     void draw(uint8_t X) {
       for (int i = 0; i < MAXWAVE; i++) {
         uint8_t y = disp_wave[i];
@@ -133,12 +151,10 @@ class Waveform {
         }
       }
     }
-
   private:
     uint8_t waveform[MAXWAVE];
     uint8_t disp_wave[MAXWAVE];
     uint8_t wavep = 0;
-
 } wave;
 
 int  beatAvg;
@@ -146,32 +162,16 @@ int  SPO2, SPO2f;
 int  voltage;
 bool filter_for_graph = false;
 bool draw_Red = false;
-volatile bool buttonPressed = false; // flag set by interrupt
+volatile bool buttonPressed = false;
 uint8_t istate = 0;
 uint8_t sleep_counter = 0;
-
 
 void button(void) {
   buttonPressed = true;
 }
 
 void checkbutton(void) {
-  // nothing here now — handled in loop()
 }
-
-
-
-
-
-// void Display_5() {
-//   if (pcflag && !digitalRead(BUTTON)) {
-//     draw_oled(5);
-//     delay(1100);
-//   }
-//   pcflag = 0;
-
-
-// }
 
 void go_sleep() {
   oled.fill(0);
@@ -179,13 +179,12 @@ void go_sleep() {
   delay(10);
   sensor.off();
   delay(10);
-  cbi(ADCSRA, ADEN);  // disable adc
+  cbi(ADCSRA, ADEN);
   delay(10);
   pinMode(0, INPUT);
   pinMode(2, INPUT);
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep_mode();  // sleep until button press
-  // cause reset
+  sleep_mode();
   setup();
 }
 
@@ -197,8 +196,6 @@ void draw_oled(int msg) {
         break;
       case 1:  oled.drawStr(0, 0, F("PLACE YOUR"), 2);
         oled.drawStr(25, 18, F("FINGER"), 2);
-
-
         break;
       case 2:  print_digit(86, 0, beatAvg);
         oled.drawStr(0, 3, F("PULSE RATE"), 1);
@@ -206,13 +203,9 @@ void draw_oled(int msg) {
         oled.drawStr(0, 25, F("SATURATION"), 1);
         print_digit(73, 16, SPO2f, ' ', 3, 2);
         oled.drawChar(116, 16, '%', 2);
-
         break;
       case 3:  oled.drawStr(33, 0, F("Pulse"), 2);
         oled.drawStr(17, 15, F("Oximeter"), 2);
-
-        //oled.drawXBMP(6,8,16,16,heart_bits);
-
         break;
       case 4:  oled.drawStr(28, 12, F("OFF IN"), 1);
         oled.drawChar(76, 12, 10 - sleep_counter / 10 + '0');
@@ -223,7 +216,6 @@ void draw_oled(int msg) {
         oled.drawStr(0, 15, F("AVG OXYGEN"), 1);
         oled.drawStr(0, 22, F("saturation"), 1);
         print_digit(75, 15, SPO2);
-
         break;
     }
   } while (oled.nextPage());
@@ -236,49 +228,43 @@ void setup(void) {
   pinMode(VIBRATOR4, OUTPUT);
   pinMode(VIBRATOR5, OUTPUT);
 
+  digitalWrite(VIBRATOR, LOW);
   digitalWrite(VIBRATOR2, LOW);
   digitalWrite(VIBRATOR3, LOW);
   digitalWrite(VIBRATOR4, LOW);
   digitalWrite(VIBRATOR5, LOW);
-  digitalWrite(VIBRATOR, LOW); // make sure it starts off
 
   pinMode(LED, OUTPUT);
   pinMode(BUTTON, INPUT_PULLUP);
-  filter_for_graph = EEPROM.read(OPTIONS);
-  draw_Red = EEPROM.read(OPTIONS + 1);
+
   oled.init();
   oled.fill(0x00);
-  draw_oled(3);
-  delay(3000);
-  if (!sensor.begin())  {
+
+  if (!sensor.begin()) {
     draw_oled(0);
     while (1);
   }
   sensor.setup();
   attachInterrupt(digitalPinToInterrupt(BUTTON), button, FALLING);
+  lastInputTime = millis();
 }
 
-long lastBeat = 0;    //Time of the last beat
-long displaytime = 0; //Time of the last display update
+long lastBeat = 0;
+long displaytime = 0;
 bool led_on = false;
 long lastBpmDisplay = 0;
-// ---- 2-SECOND AVERAGING VARIABLES ----
-#define AVERAGE_WINDOW 2000  // 2 seconds
-const int MAX_BPM_SAMPLES = 20; // roughly 10 samples per second max
+#define AVERAGE_WINDOW 2000
+const int MAX_BPM_SAMPLES = 20;
 int bpmSamples[MAX_BPM_SAMPLES];
 int bpmCount = 0;
 long bpmStartTime = 0;
-// ---- Sleep Detection Variables ----
 bool sleep = false;
-
-long startTime = 0;             // when measurement started
-long last5minCheck = 0;         // last time we compared averages
-
-int initialAvg = 0;             // the average when monitoring began
-int lowestAvg = 999;            // lowest recorded 5-min avg
-int rollingAvg = 0;             // current rolling average over time
-
-const long FIVE_MIN = 5L * 60L * 1000L;  // 5 minutes in ms
+long startTime = 0;
+long last5minCheck = 0;
+int initialAvg = 0;
+int lowestAvg = 999;
+int rollingAvg = 0;
+const long FIVE_MIN = 5L * 60L * 1000L;
 
 int getAverageBPM() {
   if (bpmCount == 0) return 0;
@@ -287,36 +273,50 @@ int getAverageBPM() {
   return sum / bpmCount;
 }
 
-void loop()  {
-    // ---- Handle button press ----
+void runOximeter() {
+  unsigned long now = millis();
+
+  // --- Handle Button Press (Silence Alarm) ---
   if (buttonPressed) {
-    buttonPressed = false;   // reset flag
-
-    // cycle display/filter state
-    istate = (istate + 1) % 4;
-    filter_for_graph = istate & 0x01;
-    draw_Red = istate & 0x02;
-    EEPROM.write(OPTIONS, filter_for_graph);
-    EEPROM.write(OPTIONS + 1, draw_Red);
-
-    // vibration pattern
-    for (int i = 0; i < 4; i++) {
-      digitalWrite(VIBRATOR, HIGH);
-      digitalWrite(VIBRATOR2, HIGH);
-      digitalWrite(VIBRATOR3, HIGH);
-      digitalWrite(VIBRATOR4, HIGH);
-      digitalWrite(VIBRATOR5, HIGH);
-      delay(150);
-      digitalWrite(VIBRATOR, LOW);
-      digitalWrite(VIBRATOR2, LOW);
-      digitalWrite(VIBRATOR3, LOW);
-      digitalWrite(VIBRATOR4, LOW);
-      digitalWrite(VIBRATOR5, LOW);
-      delay(150);
+    buttonPressed = false;
+    if (isVibrating) {
+      isVibrating = false;
     }
   }
+
+  // --- Alarm Check (Calculated Duration) ---
+  // If we haven't triggered yet, and the time passed since setup is greater than calculated wait time
+  if (!alarmHasTriggered && (now - alarmSetupTime >= timeToWaitMs)) {
+    isVibrating = true;
+    alarmHasTriggered = true; // Ensure it only fires once
+    vibrationStartTime = now;
+  }
+
+  // --- Vibration Control ---
+  if (isVibrating) {
+    // Auto-off after 60 seconds
+    if (now - vibrationStartTime >= 60000) {
+      isVibrating = false;
+    }
+  }
+
+  // Set motors
+  if (isVibrating) {
+    digitalWrite(VIBRATOR, HIGH);
+    digitalWrite(VIBRATOR2, HIGH);
+    digitalWrite(VIBRATOR3, HIGH);
+    digitalWrite(VIBRATOR4, HIGH);
+    digitalWrite(VIBRATOR5, HIGH);
+  } else {
+    digitalWrite(VIBRATOR, LOW);
+    digitalWrite(VIBRATOR2, LOW);
+    digitalWrite(VIBRATOR3, LOW);
+    digitalWrite(VIBRATOR4, LOW);
+    digitalWrite(VIBRATOR5, LOW);
+  }
+
+  // --- Sensor Logic ---
   sensor.check();
-  long now = millis();   //start time of this cycle
   if (!sensor.available()) return;
   uint32_t irValue = sensor.getIR();
   uint32_t redValue = sensor.getRed();
@@ -324,8 +324,7 @@ void loop()  {
   if (irValue < 5000) {
     voltage = getVCC();
     checkbutton();
-    draw_oled(sleep_counter <= 50 ? 1 : 4); // finger not down message
-
+    draw_oled(sleep_counter <= 50 ? 1 : 4);
     delay(200);
     ++sleep_counter;
     if (sleep_counter > 100) {
@@ -334,44 +333,35 @@ void loop()  {
     }
   } else {
     sleep_counter = 0;
-    // remove DC element
     int16_t IR_signal, Red_signal;
     bool beatRed, beatIR;
     if (!filter_for_graph) {
-      IR_signal =  pulseIR.dc_filter(irValue) ;
+      IR_signal = pulseIR.dc_filter(irValue);
       Red_signal = pulseRed.dc_filter(redValue);
       beatRed = pulseRed.isBeat(pulseRed.ma_filter(Red_signal));
-      beatIR =  pulseIR.isBeat(pulseIR.ma_filter(IR_signal));
+      beatIR = pulseIR.isBeat(pulseIR.ma_filter(IR_signal));
     } else {
-      IR_signal =  pulseIR.ma_filter(pulseIR.dc_filter(irValue)) ;
+      IR_signal = pulseIR.ma_filter(pulseIR.dc_filter(irValue));
       Red_signal = pulseRed.ma_filter(pulseRed.dc_filter(redValue));
       beatRed = pulseRed.isBeat(Red_signal);
-      beatIR =  pulseIR.isBeat(IR_signal);
+      beatIR = pulseIR.isBeat(IR_signal);
     }
-    // invert waveform to get classical BP waveshape
-    wave.record(draw_Red ? -Red_signal : -IR_signal );
-    // check IR or Red for heartbeat
+    wave.record(draw_Red ? -Red_signal : -IR_signal);
     if (draw_Red ? beatRed : beatIR) {
       long btpm = 60000 / (now - lastBeat);
       if (btpm > 0 && btpm < 200) {
         beatAvg = bpm.filter((int16_t)btpm);
-
-        // --- store for 2-second averaging ---
-        if (bpmCount == 0) bpmStartTime = now; // first reading in window
+        if (bpmCount == 0) bpmStartTime = now;
         bpmSamples[bpmCount++] = beatAvg;
-
-        // if 2 seconds passed, compute average and reset buffer
         if (now - bpmStartTime >= AVERAGE_WINDOW) {
-          beatAvg = getAverageBPM();     // compute new 2-sec average
+          beatAvg = getAverageBPM();
           bpmCount = 0;
-          lastBpmDisplay = now;          // mark time of new display update
-        }
-        else if (bpmCount >= MAX_BPM_SAMPLES) {
-          bpmCount = MAX_BPM_SAMPLES - 1; // prevent overflow
+          lastBpmDisplay = now;
+        } else if (bpmCount >= MAX_BPM_SAMPLES) {
+          bpmCount = MAX_BPM_SAMPLES - 1;
         }
       }
       lastBeat = now;
-            // Initialize startup values on first beat
       if (startTime == 0) {
         startTime = now;
         initialAvg = beatAvg;
@@ -379,58 +369,107 @@ void loop()  {
       }
       digitalWrite(LED, HIGH);
       led_on = true;
-      // compute SpO2 ratio
-      long numerator   = (pulseRed.avgAC() * pulseIR.avgDC()) / 256;
+      long numerator = (pulseRed.avgAC() * pulseIR.avgDC()) / 256;
       long denominator = (pulseRed.avgDC() * pulseIR.avgAC()) / 256;
       int RX100 = (denominator > 0) ? (numerator * 100) / denominator : 999;
-      // using formula
       SPO2f = (10400 - RX100 * 17 + 50) / 100;
-      // from table
       if ((RX100 >= 0) && (RX100 < 184))
         SPO2 = pgm_read_byte_near(&spo2_table[RX100]);
     }
-
-    
-    // ---- 5 MIN SLEEP/WAKE CHECK ----
+    // Sleep detection kept for data logging, but removed vibration trigger to avoid conflict
     if (now - last5minCheck >= FIVE_MIN && beatAvg > 0) {
       last5minCheck = now;
-
-      rollingAvg = beatAvg;   // using existing moving average
-
-      // Track lowest rolling average
-      if (rollingAvg < lowestAvg) {
-        lowestAvg = rollingAvg;
-      }
-
-      // Condition 1: Detect sleep (drop 10 bpm below initial)
-      if (!sleep && (initialAvg - rollingAvg >= 10)) {
-        sleep = true;
-      }
-
-      // Condition 2: Wake detection (rise 10 bpm above lowest)
-      if (sleep && (rollingAvg - lowestAvg >= 10)) {
-        digitalWrite(VIBRATOR, HIGH);
-        delay(1000);
-        digitalWrite(VIBRATOR, LOW);
-
-        // Reset so it doesn't buzz again immediately
-        lowestAvg = rollingAvg;
-      }
+      rollingAvg = beatAvg;
+      if (rollingAvg < lowestAvg) lowestAvg = rollingAvg;
+      if (!sleep && (initialAvg - rollingAvg >= 10)) sleep = true;
+      if (sleep && (rollingAvg - lowestAvg >= 10)) lowestAvg = rollingAvg;
     }
-
-    // update display every 50 ms if fingerdown
-    // update display only when new average is ready
-    if (now - lastBpmDisplay < 100) {   // shortly after a new average computed
+    if (now - lastBpmDisplay < 100) {
       wave.scale();
       draw_oled(2);
     }
-    // Display_5();
-
-
   }
-  // flash led for 25 ms
   if (led_on && (now - lastBeat) > 25) {
     digitalWrite(LED, LOW);
     led_on = false;
+  }
+}
+
+void loop() {
+  switch (currentState) {
+    case SET_CURRENT_HOUR:
+      draw_setup_screen("Cur Hour", currentHour);
+      if (buttonPressed) {
+        buttonPressed = false;
+        currentHour = (currentHour + 1) % 24;
+        lastInputTime = millis();
+      }
+      if (millis() - lastInputTime > 3000) {
+        currentState = SET_CURRENT_MINUTE;
+        lastInputTime = millis();
+      }
+      break;
+
+    case SET_CURRENT_MINUTE:
+      draw_setup_screen("Cur Min", currentMinute);
+      if (buttonPressed) {
+        buttonPressed = false;
+        currentMinute = (currentMinute + 10) % 60; // Increment by 10 for faster setting
+        lastInputTime = millis();
+      }
+      if (millis() - lastInputTime > 3000) {
+        currentState = SET_WAKE_HOUR;
+        lastInputTime = millis();
+      }
+      break;
+
+    case SET_WAKE_HOUR:
+      draw_setup_screen("Wake Hr", wakeHour);
+      if (buttonPressed) {
+        buttonPressed = false;
+        wakeHour = (wakeHour + 1) % 24;
+        lastInputTime = millis();
+      }
+      if (millis() - lastInputTime > 3000) {
+        currentState = SET_WAKE_MINUTE;
+        lastInputTime = millis();
+      }
+      break;
+
+    case SET_WAKE_MINUTE:
+      draw_setup_screen("Wake Min", wakeMinute);
+      if (buttonPressed) {
+        buttonPressed = false;
+        wakeMinute = (wakeMinute + 10) % 60; // Increment by 10 for faster setting
+        lastInputTime = millis();
+      }
+      if (millis() - lastInputTime > 3000) {
+        currentState = CALCULATING;
+      }
+      break;
+
+    case CALCULATING:
+      {
+        long currentTotalMins = (long)currentHour * 60 + currentMinute;
+        long wakeTotalMins = (long)wakeHour * 60 + wakeMinute;
+
+        // If wake time is earlier than current time, assume it's tomorrow
+        if (wakeTotalMins <= currentTotalMins) {
+          wakeTotalMins += 24 * 60;
+        }
+
+        long durationMins = wakeTotalMins - currentTotalMins;
+        timeToWaitMs = durationMins * 60000UL; // Convert minutes to milliseconds
+        alarmSetupTime = millis();
+
+        currentState = RUNNING;
+        draw_oled(3); // Show main screen
+        delay(1000);
+      }
+      break;
+
+    case RUNNING:
+      runOximeter();
+      break;
   }
 }
