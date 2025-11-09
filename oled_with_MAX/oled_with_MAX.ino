@@ -94,7 +94,7 @@ class Waveform {
     }
 
     void record(int waveval) {
-      waveval = waveval / 8;       // scale to fit in byte  缩放以适合字节
+      waveval = waveval / 8;       // scale to fit in byte
       waveval += 128;              //shift so entired waveform is +ve
       waveval = waveval < 0 ? 0 : waveval;
       waveform[wavep] = (uint8_t) (waveval > 255) ? 255 : waveval;
@@ -325,7 +325,7 @@ void loop()  {
     voltage = getVCC();
     checkbutton();
     draw_oled(sleep_counter <= 50 ? 1 : 4); // finger not down message
-    //? : 是三元运算符，整个表达式根据条件返回不同的值，如果x>y为真则返回x，如果为假则返回y，之后=赋值给z。相当于:if(x>y)z=x;elsez=y
+
     delay(200);
     ++sleep_counter;
     if (sleep_counter > 100) {
@@ -334,10 +334,10 @@ void loop()  {
     }
   } else {
     sleep_counter = 0;
-    // remove DC element移除直流元件
+    // remove DC element
     int16_t IR_signal, Red_signal;
     bool beatRed, beatIR;
-    if (!filter_for_graph) {//图形过滤器
+    if (!filter_for_graph) {
       IR_signal =  pulseIR.dc_filter(irValue) ;
       Red_signal = pulseRed.dc_filter(redValue);
       beatRed = pulseRed.isBeat(pulseRed.ma_filter(Red_signal));
