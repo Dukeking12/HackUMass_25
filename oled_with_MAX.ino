@@ -22,6 +22,7 @@ MAFilter bpm;
 #define LED LED_BUILTIN
 #define BUTTON 3
 #define OPTIONS 7
+#define VIBRATOR 5
 
 static const uint8_t heart_bits[] PROGMEM = { 0x00, 0x00, 0x38, 0x38, 0x7c, 0x7c, 0xfe, 0xfe, 0xfe, 0xff,
                                               0xfe, 0xff, 0xfc, 0x7f, 0xf8, 0x3f, 0xf0, 0x1f, 0xe0, 0x0f,
@@ -156,9 +157,15 @@ void checkbutton() {
     draw_Red = istate & 0x02;
     EEPROM.write(OPTIONS, filter_for_graph);
     EEPROM.write(OPTIONS + 1, draw_Red);
+
+    // Vibrate when button is pressed
+    digitalWrite(VIBRATOR, HIGH);
+    delay(200);  // vibrate for 200 ms
+    digitalWrite(VIBRATOR, LOW);
   }
   pcflag = 0;
 }
+
 
 
 
@@ -229,6 +236,9 @@ void draw_oled(int msg) {
 }
 
 void setup(void) {
+  pinMode(VIBRATOR, OUTPUT);
+  digitalWrite(VIBRATOR, LOW); // make sure it starts off
+
   pinMode(LED, OUTPUT);
   pinMode(BUTTON, INPUT_PULLUP);
   filter_for_graph = EEPROM.read(OPTIONS);
