@@ -160,7 +160,7 @@ void checkbutton() {
 
     // Vibrate when button is pressed
     digitalWrite(VIBRATOR, HIGH);
-    delay(200);  // vibrate for 200 ms
+    delay(500);  // vibrate for 200 ms
     digitalWrite(VIBRATOR, LOW);
   }
   pcflag = 0;
