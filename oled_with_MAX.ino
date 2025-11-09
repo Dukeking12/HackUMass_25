@@ -258,6 +258,17 @@ void setup(void) {
 long lastBeat = 0;    //Time of the last beat
 long displaytime = 0; //Time of the last display update
 bool led_on = false;
+// ---- Sleep Detection Variables ----
+bool sleep = false;
+
+long startTime = 0;             // when measurement started
+long last5minCheck = 0;         // last time we compared averages
+
+int initialAvg = 0;             // the average when monitoring began
+int lowestAvg = 999;            // lowest recorded 5-min avg
+int rollingAvg = 0;             // current rolling average over time
+
+const long FIVE_MIN = 5L * 60L * 1000L;  // 5 minutes in ms
 
 
 void loop()  {
@@ -301,6 +312,12 @@ void loop()  {
       long btpm = 60000 / (now - lastBeat);
       if (btpm > 0 && btpm < 200) beatAvg = bpm.filter((int16_t)btpm);
       lastBeat = now;
+            // Initialize startup values on first beat
+      if (startTime == 0) {
+        startTime = now;
+        initialAvg = beatAvg;
+        lowestAvg = beatAvg;
+      }
       digitalWrite(LED, HIGH);
       led_on = true;
       // compute SpO2 ratio
@@ -313,6 +330,35 @@ void loop()  {
       if ((RX100 >= 0) && (RX100 < 184))
         SPO2 = pgm_read_byte_near(&spo2_table[RX100]);
     }
+
+    
+    // ---- 5 MIN SLEEP/WAKE CHECK ----
+    if (now - last5minCheck >= FIVE_MIN && beatAvg > 0) {
+      last5minCheck = now;
+
+      rollingAvg = beatAvg;   // using existing moving average
+
+      // Track lowest rolling average
+      if (rollingAvg < lowestAvg) {
+        lowestAvg = rollingAvg;
+      }
+
+      // Condition 1: Detect sleep (drop 10 bpm below initial)
+      if (!sleep && (initialAvg - rollingAvg >= 10)) {
+        sleep = true;
+      }
+
+      // Condition 2: Wake detection (rise 10 bpm above lowest)
+      if (sleep && (rollingAvg - lowestAvg >= 10)) {
+        digitalWrite(VIBRATOR, HIGH);
+        delay(1000);
+        digitalWrite(VIBRATOR, LOW);
+
+        // Reset so it doesn't buzz again immediately
+        lowestAvg = rollingAvg;
+      }
+    }
+
     // update display every 50 ms if fingerdown
     if (now - displaytime > 50) {
       displaytime = now;
