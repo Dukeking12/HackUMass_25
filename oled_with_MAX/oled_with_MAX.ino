@@ -23,6 +23,10 @@ MAFilter bpm;
 #define BUTTON 3
 #define OPTIONS 7
 #define VIBRATOR 5
+#define VIBRATOR2 6
+#define VIBRATOR3 9
+#define VIBRATOR4 10
+#define VIBRATOR5 11
 
 static const uint8_t heart_bits[] PROGMEM = { 0x00, 0x00, 0x38, 0x38, 0x7c, 0x7c, 0xfe, 0xfe, 0xfe, 0xff,
                                               0xfe, 0xff, 0xfc, 0x7f, 0xf8, 0x3f, 0xf0, 0x1f, 0xe0, 0x0f,
@@ -142,42 +146,32 @@ int  SPO2, SPO2f;
 int  voltage;
 bool filter_for_graph = false;
 bool draw_Red = false;
-uint8_t pcflag = 0;
+volatile bool buttonPressed = false; // flag set by interrupt
 uint8_t istate = 0;
 uint8_t sleep_counter = 0;
 
+
 void button(void) {
-  pcflag = 1;
+  buttonPressed = true;
 }
 
-void checkbutton() {
-  if (pcflag && !digitalRead(BUTTON)) {
-    istate = (istate + 1) % 4;
-    filter_for_graph = istate & 0x01;
-    draw_Red = istate & 0x02;
-    EEPROM.write(OPTIONS, filter_for_graph);
-    EEPROM.write(OPTIONS + 1, draw_Red);
-
-    // Vibrate when button is pressed
-    digitalWrite(VIBRATOR, HIGH);
-    delay(500);  // vibrate for 200 ms
-    digitalWrite(VIBRATOR, LOW);
-  }
-  pcflag = 0;
+void checkbutton(void) {
+  // nothing here now — handled in loop()
 }
 
 
 
 
-void Display_5() {
-  if (pcflag && !digitalRead(BUTTON)) {
-    draw_oled(5);
-    delay(1100);
-  }
-  pcflag = 0;
+
+// void Display_5() {
+//   if (pcflag && !digitalRead(BUTTON)) {
+//     draw_oled(5);
+//     delay(1100);
+//   }
+//   pcflag = 0;
 
 
-}
+// }
 
 void go_sleep() {
   oled.fill(0);
@@ -237,6 +231,15 @@ void draw_oled(int msg) {
 
 void setup(void) {
   pinMode(VIBRATOR, OUTPUT);
+  pinMode(VIBRATOR2, OUTPUT);
+  pinMode(VIBRATOR3, OUTPUT);
+  pinMode(VIBRATOR4, OUTPUT);
+  pinMode(VIBRATOR5, OUTPUT);
+
+  digitalWrite(VIBRATOR2, LOW);
+  digitalWrite(VIBRATOR3, LOW);
+  digitalWrite(VIBRATOR4, LOW);
+  digitalWrite(VIBRATOR5, LOW);
   digitalWrite(VIBRATOR, LOW); // make sure it starts off
 
   pinMode(LED, OUTPUT);
@@ -252,12 +255,19 @@ void setup(void) {
     while (1);
   }
   sensor.setup();
-  attachInterrupt(digitalPinToInterrupt(BUTTON), button, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(BUTTON), button, FALLING);
 }
 
 long lastBeat = 0;    //Time of the last beat
 long displaytime = 0; //Time of the last display update
 bool led_on = false;
+long lastBpmDisplay = 0;
+// ---- 2-SECOND AVERAGING VARIABLES ----
+#define AVERAGE_WINDOW 2000  // 2 seconds
+const int MAX_BPM_SAMPLES = 20; // roughly 10 samples per second max
+int bpmSamples[MAX_BPM_SAMPLES];
+int bpmCount = 0;
+long bpmStartTime = 0;
 // ---- Sleep Detection Variables ----
 bool sleep = false;
 
@@ -270,8 +280,41 @@ int rollingAvg = 0;             // current rolling average over time
 
 const long FIVE_MIN = 5L * 60L * 1000L;  // 5 minutes in ms
 
+int getAverageBPM() {
+  if (bpmCount == 0) return 0;
+  long sum = 0;
+  for (int i = 0; i < bpmCount; i++) sum += bpmSamples[i];
+  return sum / bpmCount;
+}
 
 void loop()  {
+    // ---- Handle button press ----
+  if (buttonPressed) {
+    buttonPressed = false;   // reset flag
+
+    // cycle display/filter state
+    istate = (istate + 1) % 4;
+    filter_for_graph = istate & 0x01;
+    draw_Red = istate & 0x02;
+    EEPROM.write(OPTIONS, filter_for_graph);
+    EEPROM.write(OPTIONS + 1, draw_Red);
+
+    // vibration pattern
+    for (int i = 0; i < 4; i++) {
+      digitalWrite(VIBRATOR, HIGH);
+      digitalWrite(VIBRATOR2, HIGH);
+      digitalWrite(VIBRATOR3, HIGH);
+      digitalWrite(VIBRATOR4, HIGH);
+      digitalWrite(VIBRATOR5, HIGH);
+      delay(150);
+      digitalWrite(VIBRATOR, LOW);
+      digitalWrite(VIBRATOR2, LOW);
+      digitalWrite(VIBRATOR3, LOW);
+      digitalWrite(VIBRATOR4, LOW);
+      digitalWrite(VIBRATOR5, LOW);
+      delay(150);
+    }
+  }
   sensor.check();
   long now = millis();   //start time of this cycle
   if (!sensor.available()) return;
@@ -310,7 +353,23 @@ void loop()  {
     // check IR or Red for heartbeat
     if (draw_Red ? beatRed : beatIR) {
       long btpm = 60000 / (now - lastBeat);
-      if (btpm > 0 && btpm < 200) beatAvg = bpm.filter((int16_t)btpm);
+      if (btpm > 0 && btpm < 200) {
+        beatAvg = bpm.filter((int16_t)btpm);
+
+        // --- store for 2-second averaging ---
+        if (bpmCount == 0) bpmStartTime = now; // first reading in window
+        bpmSamples[bpmCount++] = beatAvg;
+
+        // if 2 seconds passed, compute average and reset buffer
+        if (now - bpmStartTime >= AVERAGE_WINDOW) {
+          beatAvg = getAverageBPM();     // compute new 2-sec average
+          bpmCount = 0;
+          lastBpmDisplay = now;          // mark time of new display update
+        }
+        else if (bpmCount >= MAX_BPM_SAMPLES) {
+          bpmCount = MAX_BPM_SAMPLES - 1; // prevent overflow
+        }
+      }
       lastBeat = now;
             // Initialize startup values on first beat
       if (startTime == 0) {
@@ -360,13 +419,12 @@ void loop()  {
     }
 
     // update display every 50 ms if fingerdown
-    if (now - displaytime > 50) {
-      displaytime = now;
+    // update display only when new average is ready
+    if (now - lastBpmDisplay < 100) {   // shortly after a new average computed
       wave.scale();
       draw_oled(2);
-
     }
-    Display_5();
+    // Display_5();
 
 
   }
